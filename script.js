@@ -49,10 +49,23 @@ langButtons.forEach((btn) => {
 setLanguage(localStorage.getItem("rxnner-lang") || "ru");
 
 
+
 function getYouTubeId(url) {
   try {
     const parsed = new URL(url);
-    if (parsed.hostname.includes("youtu.be")) return parsed.pathname.slice(1);
+
+    if (parsed.hostname.includes("youtu.be")) {
+      return parsed.pathname.split("/").filter(Boolean)[0];
+    }
+
+    if (parsed.pathname.includes("/shorts/")) {
+      return parsed.pathname.split("/shorts/")[1].split("/")[0];
+    }
+
+    if (parsed.pathname.includes("/embed/")) {
+      return parsed.pathname.split("/embed/")[1].split("/")[0];
+    }
+
     return parsed.searchParams.get("v");
   } catch {
     return null;
@@ -62,50 +75,139 @@ function getYouTubeId(url) {
 function formatViews(num) {
   const n = Number(num);
   if (!Number.isFinite(n)) return "";
+
   if (n >= 1000000) {
     const value = n / 1000000;
     return `${value >= 10 ? Math.round(value) : value.toFixed(1).replace(".0", "")}M`;
   }
+
   if (n >= 1000) {
     const value = n / 1000;
     return `${value >= 10 ? Math.round(value) : value.toFixed(1).replace(".0", "")}K`;
   }
+
   return String(n);
 }
 
-async function loadYouTubeViews() {
+function getCardsWithVideoIds() {
+  return Array.from(document.querySelectorAll(".work-card"))
+    .map((card) => {
+      const link = card.dataset.link || card.querySelector(".video-title")?.href || "";
+      const id = getYouTubeId(link);
+      return { card, link, id };
+    })
+    .filter((item) => item.id);
+}
+
+function setFallbackCardData() {
+  getCardsWithVideoIds().forEach(({ card, link }) => {
+    const titleLink = card.querySelector(".video-title");
+    const viewsNode = card.querySelector(".views");
+
+    if (titleLink) {
+      titleLink.href = link;
+    }
+
+    if (viewsNode && !viewsNode.dataset.videoUrl) {
+      viewsNode.dataset.videoUrl = link;
+    }
+  });
+}
+
+function sortWorkCardsByViews() {
+  document.querySelectorAll(".works-grid").forEach((grid) => {
+    const cards = Array.from(grid.querySelectorAll(".work-card"));
+
+    cards
+      .sort((a, b) => {
+        const av = Number(a.dataset.viewCount || 0);
+        const bv = Number(b.dataset.viewCount || 0);
+        return bv - av;
+      })
+      .forEach((card) => grid.appendChild(card));
+  });
+}
+
+function chunkArray(array, size) {
+  const chunks = [];
+
+  for (let i = 0; i < array.length; i += size) {
+    chunks.push(array.slice(i, i + size));
+  }
+
+  return chunks;
+}
+
+async function loadYouTubeData() {
+  setFallbackCardData();
+
   const apiKey = window.YOUTUBE_API_KEY;
   if (!apiKey) return;
 
-  const viewNodes = Array.from(document.querySelectorAll(".views"));
-  const ids = [...new Set(viewNodes.map((node) => getYouTubeId(node.dataset.videoUrl)).filter(Boolean))];
+  const cardItems = getCardsWithVideoIds();
+  const ids = [...new Set(cardItems.map((item) => item.id))];
 
   if (!ids.length) return;
 
   try {
-    const url = `https://www.googleapis.com/youtube/v3/videos?part=statistics&id=${ids.join(",")}&key=${apiKey}`;
-    const response = await fetch(url);
-    if (!response.ok) return;
+    const videosById = {};
 
-    const data = await response.json();
-    const viewsById = {};
-    data.items?.forEach((item) => {
-      viewsById[item.id] = item.statistics?.viewCount;
+    for (const chunk of chunkArray(ids, 50)) {
+      const url = `https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics&id=${chunk.join(",")}&key=${apiKey}`;
+      const response = await fetch(url);
+      if (!response.ok) continue;
+
+      const data = await response.json();
+
+      data.items?.forEach((item) => {
+        videosById[item.id] = {
+          title: item.snippet?.title || "",
+          views: item.statistics?.viewCount || ""
+        };
+      });
+    }
+
+    cardItems.forEach(({ card, link, id }) => {
+      const video = videosById[id];
+      if (!video) return;
+
+      const title = video.title || card.dataset.title || "";
+      const rawViews = Number(video.views || 0);
+      const formattedViews = formatViews(rawViews);
+
+      card.dataset.title = title;
+      card.dataset.link = link;
+      card.dataset.viewCount = String(rawViews);
+
+      const titleLink = card.querySelector(".video-title");
+      if (titleLink) {
+        titleLink.textContent = title;
+        titleLink.href = link;
+      }
+
+      const image = card.querySelector(".thumb-button img");
+      if (image) {
+        image.alt = title;
+      }
+
+      const viewsNode = card.querySelector(".views");
+      if (viewsNode && formattedViews) {
+        viewsNode.dataset.videoUrl = link;
+        viewsNode.innerHTML = `
+          <img class="view-icon" src="assets/icons/view.png" alt="" aria-hidden="true">
+          <span>${formattedViews}</span>
+        `;
+        viewsNode.classList.add("visible");
+      }
     });
 
-    viewNodes.forEach((node) => {
-      const id = getYouTubeId(node.dataset.videoUrl);
-      const count = viewsById[id];
-      if (!count) return;
-      node.textContent = formatViews(count);
-      node.classList.add("visible");
-    });
+    sortWorkCardsByViews();
   } catch (error) {
-    console.warn("YouTube views could not be loaded:", error);
+    console.warn("YouTube data could not be loaded:", error);
   }
 }
 
-loadYouTubeViews();
+loadYouTubeData();
 
 
 const lightbox = document.getElementById("lightbox");
@@ -113,23 +215,26 @@ const lightboxImg = document.getElementById("lightboxImg");
 const lightboxTitle = document.getElementById("lightboxTitle");
 const watchBtn = document.getElementById("watchBtn");
 
-document.querySelectorAll(".work-card").forEach((card) => {
-  const button = card.querySelector(".thumb-button");
-  button.addEventListener("click", () => {
-    const img = card.dataset.img;
-    const title = card.dataset.title;
-    const link = card.dataset.link;
+document.addEventListener("click", (event) => {
+  const button = event.target.closest(".thumb-button");
+  if (!button) return;
 
-    lightboxImg.src = img;
-    lightboxImg.alt = title;
-    lightboxTitle.textContent = title;
-    lightboxTitle.href = link;
-    watchBtn.href = link;
+  const card = button.closest(".work-card");
+  if (!card) return;
 
-    lightbox.classList.add("active");
-    lightbox.setAttribute("aria-hidden", "false");
-    document.body.style.overflow = "hidden";
-  });
+  const img = card.dataset.img;
+  const title = card.dataset.title;
+  const link = card.dataset.link;
+
+  lightboxImg.src = img;
+  lightboxImg.alt = title;
+  lightboxTitle.textContent = title;
+  lightboxTitle.href = link;
+  watchBtn.href = link;
+
+  lightbox.classList.add("active");
+  lightbox.setAttribute("aria-hidden", "false");
+  document.body.style.overflow = "hidden";
 });
 
 function closeLightbox() {

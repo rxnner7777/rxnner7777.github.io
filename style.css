@@ -840,3 +840,28 @@ div {
     width:min(100% - 22px, 1240px);
   }
 }
+
+
+/* YouTube title + views auto data */
+.views::before{
+  content:none !important;
+}
+
+.views{
+  display:none;
+  align-items:center;
+  gap:6px;
+  white-space:nowrap;
+}
+
+.views.visible{
+  display:inline-flex;
+}
+
+.view-icon{
+  width:14px;
+  height:14px;
+  object-fit:contain;
+  display:block;
+  flex:0 0 14px;
+}
